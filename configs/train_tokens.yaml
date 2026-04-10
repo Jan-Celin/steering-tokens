@@ -1,5 +1,5 @@
 model:
-  name_or_path: "Qwen/Qwen2.5-1.5B" # Using a smaller model for local testing
+  name_or_path: "Qwen/Qwen2.5-1.5B"
   max_length: 256
 
 data:
