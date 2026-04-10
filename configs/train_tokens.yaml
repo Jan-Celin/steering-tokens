@@ -3,13 +3,23 @@ model:
   max_length: 256
 
 data:
-  dataset_name: "HuggingFaceTB/smoltalk"
-  behavior_instruction: "Answer in Spanish."
-  batch_size: 4
+  module: "data.arithmetic_dataset"
+  dataset_name: "fblgit/simple-math"
+  batch_size: 1
+  input_max_length: 32
+  target_max_length: 16
+  num_workers: 0
+  pin_memory: false
 
 training:
   epochs: 2
   learning_rate: 1e-4
   weight_decay: 1e-3
   temperature: 10.0
-  device: "cuda"
+  device: "mps"
+
+intervention:
+  module: "interventions.arithmetic"
+  name: "arithmetic"
+  params:
+    operator_text: "+"
