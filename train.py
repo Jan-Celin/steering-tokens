@@ -82,9 +82,10 @@ def main():
     train_dataloader = get_dataloader(config, tokenizer, split="train")
     
     optimizer = optim.AdamW(
-        model.parameters(), 
-        lr=float(config["training"]["learning_rate"]), 
-        weight_decay=float(config["training"]["weight_decay"])
+        (p for p in model.parameters() if p.requires_grad),
+        lr=float(config["training"]["learning_rate"]),
+        weight_decay=float(config["training"]["weight_decay"]),
+        eps=float(config["training"].get("adam_eps", 1e-4)),
     )
     
     print("Starting training...")

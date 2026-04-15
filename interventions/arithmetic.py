@@ -3,16 +3,6 @@ import torch.nn as nn
 from interventions.registry import register_intervention
 
 
-def _sequence_loss(logits, labels):
-    criterion = nn.CrossEntropyLoss()
-    seq_len = min(logits.size(1), labels.size(1))
-    logits = logits[:, :seq_len, :]
-    labels = labels[:, :seq_len]
-
-    shift_logits = logits[:, :-1, :].contiguous()
-    shift_labels = labels[:, 1:].contiguous()
-    return criterion(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-
 @register_intervention("arithmetic")
 class ArithmeticIntervention(nn.Module):
     def __init__(self, base_model, tokenizer, operator_text):
@@ -27,9 +17,10 @@ class ArithmeticIntervention(nn.Module):
 
         with torch.no_grad():
             instruction_tokens = self.tokenizer(operator_text, return_tensors="pt", truncation=True, max_length=50)
-            instruction_embeds = base_model.get_input_embeddings()(instruction_tokens.input_ids.to(self.device))
-        self.operator_embedding = nn.Parameter(instruction_embeds.squeeze(0))  # this embedding is learned during training
+            instruction_embeds = base_model.get_input_embeddings()(instruction_tokens.input_ids.to(self.device))  # TODO-JC: Check if embedding initialization affects training stability or convergence (e.g. compare with random initialization)
 
+        # Keep the trainable parameter in fp32 for optimizer stability.
+        self.operator_embedding = nn.Parameter(instruction_embeds.squeeze(0).float())
         print("Initialized ArithmeticIntervention with operator:", operator_text)
 
     def forward(self, input_ids, attention_mask, **kwargs):
@@ -40,7 +31,8 @@ class ArithmeticIntervention(nn.Module):
         prompt_embeds = self.base_model.get_input_embeddings()(input_ids)
         batch_size = input_ids.size(0)
 
-        self.operator_embedding_expanded = self.operator_embedding.unsqueeze(0).expand(batch_size, -1, -1)
+        operator_embedding = self.operator_embedding.to(dtype=prompt_embeds.dtype)
+        self.operator_embedding_expanded = operator_embedding.unsqueeze(0).expand(batch_size, -1, -1)
 
         input_embeds = torch.cat([prompt_embeds, self.operator_embedding_expanded], dim=1)
         extended_attention_mask = torch.cat(
@@ -56,5 +48,57 @@ class ArithmeticIntervention(nn.Module):
         return outputs.logits
 
     def training_step(self, batch):
-        logits = self.forward(batch["input_ids"], batch["attention_mask"])
-        return _sequence_loss(logits, batch["labels"])
+        input_ids = batch["input_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+        labels = batch["labels"].to(self.device)
+
+        embedding_layer = self.base_model.get_input_embeddings()
+        operator_embedding = self.operator_embedding.to(dtype=embedding_layer.weight.dtype)
+
+        criterion = nn.CrossEntropyLoss()
+        sample_losses = []
+
+        for sample_idx in range(input_ids.size(0)):
+            prompt_len = int(attention_mask[sample_idx].sum().item())
+            prompt_ids = input_ids[sample_idx, :prompt_len]
+
+            target_ids = labels[sample_idx]
+            valid_target_ids = target_ids[target_ids != -100]
+            if valid_target_ids.numel() == 0:
+                continue
+
+            # Teacher forcing: answer token k is predicted using answer tokens < k.
+            answer_prefix_ids = valid_target_ids[:-1]
+
+            prompt_embeds = embedding_layer(prompt_ids.unsqueeze(0)).squeeze(0)
+            if answer_prefix_ids.numel() > 0:
+                answer_prefix_embeds = embedding_layer(answer_prefix_ids.unsqueeze(0)).squeeze(0)
+                sample_input_embeds = torch.cat(
+                    [prompt_embeds, operator_embedding, answer_prefix_embeds], dim=0
+                )
+            else:
+                sample_input_embeds = torch.cat([prompt_embeds, operator_embedding], dim=0)
+
+            sample_attention_mask = torch.ones(
+                1,
+                sample_input_embeds.size(0),
+                device=self.device,
+                dtype=attention_mask.dtype,
+            )
+
+            outputs = self.base_model(
+                inputs_embeds=sample_input_embeds.unsqueeze(0),
+                attention_mask=sample_attention_mask,
+            )
+
+            # The first answer token is predicted from the last operator position.
+            pred_start = prompt_embeds.size(0) + operator_embedding.size(0) - 1
+            pred_end = pred_start + valid_target_ids.size(0)
+            answer_logits = outputs.logits[0, pred_start:pred_end, :]
+
+            sample_losses.append(criterion(answer_logits, valid_target_ids))
+
+        if not sample_losses:
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
+
+        return torch.stack(sample_losses).mean()

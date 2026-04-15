@@ -14,7 +14,7 @@ def train_epoch(model, dataloader, optimizer, device):
     total_loss = 0
 
     pbar = tqdm(dataloader, desc="Training")
-    for batch in pbar:
+    for step_idx, batch in enumerate(pbar, start=1):
         optimizer.zero_grad()
 
         batch = _move_batch_to_device(batch, device)
@@ -25,6 +25,6 @@ def train_epoch(model, dataloader, optimizer, device):
         optimizer.step()
 
         total_loss += loss.item()
-        pbar.set_postfix(loss=total_loss / len(dataloader))
+        pbar.set_postfix(loss=total_loss / step_idx)
 
     return total_loss / len(dataloader)
