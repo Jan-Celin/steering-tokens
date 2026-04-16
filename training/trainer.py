@@ -1,5 +1,6 @@
 import torch
 from tqdm import tqdm
+from typing import Callable, Optional, Dict, Any
 
 MAX_STEPS = None
 
@@ -10,7 +11,30 @@ def _move_batch_to_device(batch, device):
     return moved_batch
 
 
-def train_epoch(model, dataloader, optimizer, device):
+def train_epoch(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    eval_fn: Optional[Callable] = None,
+    eval_dataloader: Optional[Any] = None,
+    eval_kwargs: Optional[Dict] = None,
+):
+    """
+    Train for one epoch.
+    
+    Args:
+        model: The model to train
+        dataloader: Training dataloader
+        optimizer: Optimizer
+        device: Device to train on
+        eval_fn: Optional evaluation function to call after epoch
+        eval_dataloader: Optional dataloader for evaluation
+        eval_kwargs: Optional kwargs to pass to eval_fn (e.g., tokenizer)
+    
+    Returns:
+        (epoch_loss, losses, eval_results): Average loss, per-step losses, and eval metrics
+    """
     model.train()
     total_loss = 0
     losses = []
@@ -34,4 +58,13 @@ def train_epoch(model, dataloader, optimizer, device):
 
         pbar.set_postfix(loss=total_loss / step_idx)
 
-    return total_loss / len(dataloader), losses
+    epoch_loss = total_loss / len(dataloader)
+    
+    # Run evaluation if provided
+    eval_results = None
+    if eval_fn and eval_dataloader:
+        if eval_kwargs is None:
+            eval_kwargs = {}
+        eval_results = eval_fn(model, eval_dataloader, device, **eval_kwargs)
+    
+    return epoch_loss, losses, eval_results

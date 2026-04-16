@@ -5,6 +5,8 @@ from utils.config import load_config
 from models.model_manager import load_model_and_tokenizer
 from interventions import get_intervention
 from training.trainer import train_epoch
+from training.metrics import evaluate_epoch
+from utils.visualization import plot_training_curves, print_epoch_summary
 import torch.optim as optim
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -83,6 +85,9 @@ def main():
     get_dataloader = getattr(dataset_module, "get_dataloader")
     train_dataloader = get_dataloader(config, tokenizer, split="train")
     
+    # Also load eval dataloader (same data for now, but could use separate split)
+    eval_dataloader = get_dataloader(config, tokenizer, split="train")
+    
     optimizer = optim.AdamW(
         (p for p in model.parameters() if p.requires_grad),
         lr=float(config["training"]["learning_rate"]),
@@ -91,13 +96,35 @@ def main():
     )
     
     print("Starting training...")
+    epoch_losses = []
+    epoch_metrics = []
+    
     for epoch in tqdm(range(config["training"]["epochs"]), desc="Training Epochs"):
-        loss, losses = train_epoch(model, train_dataloader, optimizer, device)
-        print(f"Epoch {epoch+1}/{config['training']['epochs']} - Loss: {loss:.4f}")
+        loss, losses, eval_results = train_epoch(
+            model, 
+            train_dataloader, 
+            optimizer, 
+            device,
+            eval_fn=evaluate_epoch,
+            eval_dataloader=eval_dataloader,
+            eval_kwargs={"tokenizer": tokenizer},
+        )
+        epoch_losses.append(loss)
+        epoch_metrics.append(eval_results)
+        
+        print_epoch_summary(epoch + 1, loss, eval_results)
+    
+    # Generate plots
+    print("\nGenerating training visualizations...")
+    plot_training_curves(epoch_losses, epoch_metrics, output_dir="outputs")
+    
+    print("\nTraining complete!")
+    print(f"Final loss: {epoch_losses[-1]:.4f}")
+    print(f"Final mean MSE: {epoch_metrics[-1]['mean_mse']:.6f}")
+    print(f"Final exact match rate: {epoch_metrics[-1]['exact_match_rate']:.2%}")
 
-    # Save the loss curve
-    plt.plot(losses)
-    plt.xlabel("Step")
+if __name__ == "__main__":
+    main()
     plt.ylabel("Loss")
     plt.title("Training Loss")
     # save the plot and name it with the current timestamp
