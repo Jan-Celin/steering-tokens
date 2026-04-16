@@ -1,6 +1,7 @@
 import torch
 from tqdm import tqdm
 
+MAX_STEPS = None
 
 def _move_batch_to_device(batch, device):
     moved_batch = {}
@@ -15,6 +16,9 @@ def train_epoch(model, dataloader, optimizer, device):
 
     pbar = tqdm(dataloader, desc="Training")
     for step_idx, batch in enumerate(pbar, start=1):
+        if MAX_STEPS and step_idx > MAX_STEPS:
+            break
+
         optimizer.zero_grad()
 
         batch = _move_batch_to_device(batch, device)

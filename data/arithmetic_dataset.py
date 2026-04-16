@@ -49,7 +49,10 @@ class SimpleMathArithmeticDataset(Dataset):
 			allowed = set(operator_filter) if isinstance(operator_filter, (list, tuple, set)) else {operator_filter}
 
 			def keep_operator(example):
-				_, operator, _ = _parse_instruction(example["instruction"])
+				try:
+					_, operator, _ = _parse_instruction(example["instruction"])
+				except ValueError:
+					return False
 				return operator in allowed
 
 			dataset = dataset.filter(keep_operator)
@@ -114,6 +117,10 @@ class SimpleMathArithmeticDataset(Dataset):
 
 def get_dataloader(config, tokenizer, split="train"):
 	data_cfg = config.get("data", {})
+	intervention_cfg = config.get("intervention", {})
+	intervention_params = intervention_cfg.get("params", {})
+
+	operator_filter = intervention_params.get("operator_text")
 
 	dataset = SimpleMathArithmeticDataset(
 		tokenizer=tokenizer,
@@ -121,7 +128,7 @@ def get_dataloader(config, tokenizer, split="train"):
 		split=split,
 		input_max_length=int(data_cfg.get("input_max_length", 32)),
 		target_max_length=int(data_cfg.get("target_max_length", 16)),
-		operator_filter=data_cfg.get("operator_filter"),
+		operator_filter=operator_filter,
 	)
 
 	return DataLoader(
