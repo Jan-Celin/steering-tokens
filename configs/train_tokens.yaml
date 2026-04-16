@@ -5,7 +5,7 @@ model:
 data:
   module: "data.arithmetic_dataset"
   dataset_name: "fblgit/simple-math"
-  batch_size: 1
+  batch_size: 8
   input_max_length: 32
   target_max_length: 16
   num_workers: 0

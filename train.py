@@ -7,6 +7,8 @@ from interventions import get_intervention
 from training.trainer import train_epoch
 import torch.optim as optim
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+from datetime import datetime
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -90,8 +92,19 @@ def main():
     
     print("Starting training...")
     for epoch in tqdm(range(config["training"]["epochs"]), desc="Training Epochs"):
-        loss = train_epoch(model, train_dataloader, optimizer, device)
+        loss, losses = train_epoch(model, train_dataloader, optimizer, device)
         print(f"Epoch {epoch+1}/{config['training']['epochs']} - Loss: {loss:.4f}")
+
+    # Save the loss curve
+    plt.plot(losses)
+    plt.xlabel("Step")
+    plt.ylabel("Loss")
+    plt.title("Training Loss")
+    # save the plot and name it with the current timestamp
+    if not os.path.exists("outputs"):
+        os.makedirs("outputs")
+    plt.savefig(f"outputs/training_loss_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png")
+    plt.show()
 
 if __name__ == "__main__":
     main()

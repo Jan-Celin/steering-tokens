@@ -60,10 +60,10 @@ class ArithmeticIntervention(nn.Module):
 
         for sample_idx in range(input_ids.size(0)):
             prompt_len = int(attention_mask[sample_idx].sum().item())
-            prompt_ids = input_ids[sample_idx, :prompt_len]
+            prompt_ids = input_ids[sample_idx, :prompt_len]  # Take only the prompt tokens, excluding padding and operator tokens.
 
             target_ids = labels[sample_idx]
-            valid_target_ids = target_ids[target_ids != -100]
+            valid_target_ids = target_ids[target_ids != -100]  # Filter out padding tokens and ignored positions. Shape: (target_seq_len,)
             if valid_target_ids.numel() == 0:
                 continue
 
