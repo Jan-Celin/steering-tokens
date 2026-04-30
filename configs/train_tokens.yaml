@@ -3,8 +3,8 @@ model:
   max_length: 256
 
 data:
-  module: "data.arithmetic_dataset"
-  dataset_name: "fblgit/simple-math"
+  module: "data.translation_dataset"
+  dataset_path: "datasets/translation/en_es.json"
   batch_size: 16
   input_max_length: 32
   target_max_length: 16
@@ -12,14 +12,15 @@ data:
   pin_memory: false
 
 training:
-  epochs: 2
+  epochs: 10
   learning_rate: 1e-4
   weight_decay: 1e-3
   temperature: 10.0
   device: "mps"
+  max_steps: 100
 
 intervention:
-  module: "interventions.arithmetic"
-  name: "arithmetic"
+  module: "interventions.translation"
+  name: "translation"
   params:
-    operator_text: "+"
+    steering_text: "translate"

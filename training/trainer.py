@@ -2,8 +2,6 @@ import torch
 from tqdm import tqdm
 from typing import Callable, Optional, Dict, Any
 
-MAX_STEPS = None
-
 def _move_batch_to_device(batch, device):
     moved_batch = {}
     for key, value in batch.items():
@@ -19,6 +17,7 @@ def train_epoch(
     eval_fn: Optional[Callable] = None,
     eval_dataloader: Optional[Any] = None,
     eval_kwargs: Optional[Dict] = None,
+    max_steps: Optional[int] = None,
 ):
     """
     Train for one epoch.
@@ -31,7 +30,7 @@ def train_epoch(
         eval_fn: Optional evaluation function to call after epoch
         eval_dataloader: Optional dataloader for evaluation
         eval_kwargs: Optional kwargs to pass to eval_fn (e.g., tokenizer)
-    
+        max_steps: Optional maximum number of training steps
     Returns:
         (epoch_loss, losses, eval_results): Average loss, per-step losses, and eval metrics
     """
@@ -39,9 +38,10 @@ def train_epoch(
     total_loss = 0
     losses = []
 
-    pbar = tqdm(dataloader, desc="Training")
+    pbar_total = min(len(dataloader), max_steps) if max_steps is not None else len(dataloader)
+    pbar = tqdm(dataloader, desc="Training", total=pbar_total)
     for step_idx, batch in enumerate(pbar, start=1):
-        if MAX_STEPS and step_idx > MAX_STEPS:
+        if max_steps is not None and step_idx > max_steps:
             break
 
         optimizer.zero_grad()
