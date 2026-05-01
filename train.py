@@ -29,48 +29,27 @@ def print_epoch_summary(epoch, loss, eval_results):
             else:
                 print(f"  {metric}: {value}")
 
+def get_device(device_str):
+    if device_str == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        else:
+            return torch.device("cpu")
+    elif device_str == "cuda":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        else:
+           return torch.device("cpu")
+    else:
+        return torch.device(device_str)
+
 def main():
     args = parse_args()
     config = load_config(args.config)
 
-    requested_device = str(config.get("training", {}).get("device", "auto")).lower()
-    if requested_device == "auto":
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif torch.backends.mps.is_available():
-            device = "mps"
-        else:
-            device = "cpu"
-    elif requested_device == "cuda":
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif torch.backends.mps.is_available():
-            print("Requested device 'cuda' is unavailable. Falling back to 'mps'.")
-            device = "mps"
-        else:
-            print("Requested device 'cuda' is unavailable. Falling back to 'cpu'.")
-            device = "cpu"
-    elif requested_device == "mps":
-        if torch.backends.mps.is_available():
-            device = "mps"
-        elif torch.cuda.is_available():
-            print("Requested device 'mps' is unavailable. Falling back to 'cuda'.")
-            device = "cuda"
-        else:
-            print("Requested device 'mps' is unavailable. Falling back to 'cpu'.")
-            device = "cpu"
-    elif requested_device == "cpu":
-        device = "cpu"
-    else:
-        print(f"Unknown device '{requested_device}'. Falling back to auto selection.")
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif torch.backends.mps.is_available():
-            device = "mps"
-        else:
-            device = "cpu"
-
+    device = get_device(str(config.get("training", {}).get("device", "auto")).lower())
     print(f"Using device: {device}")
+    
     data_config = config.get("data", {})
     intervention_config = config.get("intervention", {})
     max_steps = config["training"].get("max_steps", None)
@@ -91,6 +70,8 @@ def main():
         tokenizer=tokenizer,
         **intervention_params
     )
+
+    output_dir = f"outputs/{intervention_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     print("Loading dataset...")
     dataset_module_path = data_config.get("module")
@@ -136,12 +117,12 @@ def main():
         epoch_metrics.append(eval_results)
         # save eval examples for manual inspection
         if eval_results and "examples" in eval_results:
-            save_eval_examples(eval_results["examples"], output_dir="outputs", filename=f"eval_examples_epoch_{epoch+1}.csv")
+            save_eval_examples(eval_results["examples"], output_dir=output_dir, filename=f"eval_examples_epoch_{epoch+1}.csv")
         
         print_epoch_summary(epoch + 1, loss, eval_results)
 
     # final plots and save
-    plot_training_curves(epoch_losses, epoch_metrics, output_dir="outputs")
+    plot_training_curves(epoch_losses, epoch_metrics, output_dir=output_dir)
 
 if __name__ == "__main__":
     main()
