@@ -91,7 +91,7 @@ class TranslationIntervention(nn.Module):
                     source_embeds,
                     space_embeds_single,
                     steering_embedding,
-                    space_embeds_single,
+                    # REMOVED the second space here, as the target now starts with a natural space token
                     target_embeds,
                 ],
                 dim=0,
@@ -99,7 +99,9 @@ class TranslationIntervention(nn.Module):
 
             packed_embeds.append(sample_embeds)
             packed_masks.append(torch.ones(sample_embeds.size(0), device=self.device, dtype=source_attention_mask.dtype))
-            target_starts.append(source_len + space_len + steering_len + space_len - 1)
+            
+            # Adjusted target start to account for the removed space
+            target_starts.append(source_len + space_len + steering_len - 1)
             target_lengths.append(target_len)
 
         input_embeds = pad_sequence(packed_embeds, batch_first=True)
@@ -148,25 +150,47 @@ class TranslationIntervention(nn.Module):
 
         for i in range(batch_size):
             prompt_len = int(attention_mask[i].sum().item()) if attention_mask is not None else input_ids.size(1)
-            curr_input_ids = input_ids[i, :prompt_len].unsqueeze(0).to(device)
-            finished = False
+            
+            # 1. Extract just the source prompt
+            source_input_ids = input_ids[i, :prompt_len].unsqueeze(0).to(device)
+            source_embeds = embedding_layer(source_input_ids)
+            
+            # 2. Build the static prefix embeddings
+            steering_embedding_expanded = self.steering_embedding.unsqueeze(0)
+            space_embeds_expanded = self._get_space_embeds(1, source_embeds.dtype)
+            
+            prefix_embeds = torch.cat([
+                source_embeds, 
+                space_embeds_expanded, 
+                steering_embedding_expanded
+                # REMOVED the second space here to match the updated training step
+            ], dim=1)
+            
+            # Trackers for generation
+            curr_input_ids = source_input_ids.clone()
+            generated_ids = torch.empty((1, 0), dtype=torch.long, device=device)
 
             for _ in range(max_new_tokens):
-                curr_embeds = embedding_layer(curr_input_ids)
-                steering_embedding_expanded = self.steering_embedding.unsqueeze(0)
-                space_embeds_expanded = self._get_space_embeds(1, curr_embeds.dtype)
-                input_embeds = torch.cat([curr_embeds, space_embeds_expanded, steering_embedding_expanded], dim=1)
+                # 3. Concatenate prefix with newly generated tokens
+                if generated_ids.size(1) > 0:
+                    generated_embeds = embedding_layer(generated_ids)
+                    input_embeds = torch.cat([prefix_embeds, generated_embeds], dim=1)
+                else:
+                    input_embeds = prefix_embeds
 
                 extended_mask = torch.ones(1, input_embeds.size(1), device=device, dtype=attention_mask.dtype if attention_mask is not None else torch.long)
+                
                 outputs = self.base_model(inputs_embeds=input_embeds, attention_mask=extended_mask)
-                next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1)
+                next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1).unsqueeze(-1)
 
+                # 4. Check for stopping condition
                 if next_token.item() in eos_ids:
-                    curr_input_ids = torch.cat([curr_input_ids, next_token.unsqueeze(-1)], dim=1)
-                    finished = True
+                    curr_input_ids = torch.cat([curr_input_ids, next_token], dim=1)
                     break
 
-                curr_input_ids = torch.cat([curr_input_ids, next_token.unsqueeze(-1)], dim=1)
+                # 5. Append generated token for the next loop iteration
+                curr_input_ids = torch.cat([curr_input_ids, next_token], dim=1)
+                generated_ids = torch.cat([generated_ids, next_token], dim=1)
 
             generated_sequences.append(curr_input_ids.squeeze(0))
 
