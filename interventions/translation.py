@@ -125,9 +125,6 @@ class TranslationIntervention(nn.Module):
         loss_labels[target_attention_mask == 0] = -100
 
         loss = nn.CrossEntropyLoss()(target_logits.reshape(-1, target_logits.size(-1)), loss_labels.reshape(-1))
-        
-        with torch.no_grad():
-            self.steering_embedding.clamp_(-0.5, 0.5)
 
         return loss
 
