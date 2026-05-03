@@ -21,10 +21,7 @@ def plot_training_curves(epoch_losses, epoch_metrics, output_dir="outputs"):
 
     # Accuracy / exact match
     plt.figure()
-    accs = [m["token_accuracy"] if m is not None else None for m in epoch_metrics]
     em = [m["exact_match_rate"] if m is not None else None for m in epoch_metrics]
-    if any(x is not None for x in accs):
-        plt.plot(epochs, accs, marker="o", label="token_accuracy")
     if any(x is not None for x in em):
         plt.plot(epochs, em, marker="o", label="exact_match_rate")
     plt.xlabel("Epoch")

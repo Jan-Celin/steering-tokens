@@ -47,7 +47,6 @@ class TranslationDataset(Dataset):
     def __getitem__(self, idx):
         source_text, target_text = self.examples[idx]
 
-        # FIX: Prepend a space for correct BPE boundaries and append EOS to teach stopping
         target_text = " " + target_text
         if self.tokenizer.eos_token:
             target_text += self.tokenizer.eos_token

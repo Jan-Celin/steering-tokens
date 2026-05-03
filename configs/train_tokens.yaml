@@ -14,13 +14,17 @@ data:
 training:
   epochs: 20
   learning_rate: 1e-4
-  weight_decay: 1e-3
-  temperature: 10.0
+  weight_decay: 0
+  temperature: 0
   device: "cuda"
   max_steps: null
 
 intervention:
-  module: "interventions.translation"
-  name: "translation"
+  module: "interventions.steering"
+  name: "steering"
   params:
     steering_text: "translate"
+
+metadata:
+  project_name: "steering-tokens"
+  run_name: "translation_steering"
