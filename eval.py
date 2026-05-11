@@ -93,6 +93,7 @@ def evaluate(model, dataloader, device, tokenizer=None):
     return {
         "mean_loss": mean_loss,
         "exact_match_rate": exact_match_rate,
+        "embedding": model.steering_embedding.detach().cpu() if hasattr(model, "steering_embedding") else None,
         "examples": per_example_results,
     }
 

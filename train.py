@@ -14,7 +14,7 @@ from datetime import datetime
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/train_tokens.yaml")
+    parser.add_argument("--config", type=str, default="configs/translation.yaml")
     return parser.parse_args()
 
 def print_epoch_summary(epoch, loss, eval_results):
@@ -120,6 +120,16 @@ def main():
             save_eval_examples(eval_results["examples"], output_dir=output_dir, filename=f"eval_examples_epoch_{epoch+1}.csv")
         
         print_epoch_summary(epoch + 1, loss, eval_results)
+
+    # Save checkpoint with trained steering embedding
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+    checkpoint = {
+        "steering_embedding": model.steering_embedding.data,
+        "config": config,
+    }
+    torch.save(checkpoint, f"{output_dir}/checkpoint.pt")
+    print(f"\nCheckpoint saved to {output_dir}/checkpoint.pt")
 
     # final plots and save
     plot_training_curves(epoch_losses, epoch_metrics, output_dir=output_dir)

@@ -1,0 +1,30 @@
+model:
+  name_or_path: "Qwen/Qwen2.5-1.5B"
+  max_length: 256
+
+data:
+  module: "data.translation_dataset"
+  dataset_path: "datasets/location_continent/location_continent.json"
+  batch_size: 16
+  input_max_length: 32
+  target_max_length: 16
+  num_workers: 0
+  pin_memory: false
+
+training:
+  epochs: 20
+  learning_rate: 1e-4
+  weight_decay: 1e-3
+  temperature: 0
+  device: "cuda"
+  max_steps: null
+
+intervention:
+  module: "interventions.steering"
+  name: "steering"
+  params:
+    steering_text: "continent"
+
+metadata:
+  project_name: "steering-tokens"
+  run_name: "location_continent_steering"

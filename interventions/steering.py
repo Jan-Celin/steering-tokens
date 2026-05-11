@@ -6,185 +6,197 @@ from interventions.registry import register_intervention
 
 @register_intervention("steering")
 class SteeringIntervention(nn.Module):
-    def __init__(self, base_model, tokenizer, steering_text=" translate"):
+    def __init__(self, base_model, tokenizer, steering_text):
         super().__init__()
         self.base_model = base_model
-        self.tokenizer = tokenizer
-        self.device = next(base_model.parameters()).device
-
-        # 1. Freeze base model parameters
         for param in self.base_model.parameters():
             param.requires_grad = False
 
-        # 2. Initialize Steering Embedding (Instructional prefix)
+        self.tokenizer = tokenizer
+        self.device = next(base_model.parameters()).device
+
         with torch.no_grad():
-            if steering_text:
-                instr_ids = self.tokenizer(steering_text, return_tensors="pt", add_special_tokens=False).input_ids.to(self.device)
-            else:
-                instr_ids = torch.tensor([[self.tokenizer.unk_token_id]], device=self.device)
-            instr_embeds = base_model.get_input_embeddings()(instr_ids)
+            instruction_tokens = self.tokenizer(steering_text, return_tensors="pt", truncation=True, max_length=50)
+            instruction_embeds = base_model.get_input_embeddings()(instruction_tokens.input_ids.to(self.device))
+
+        self.steering_embedding = nn.Parameter(instruction_embeds.squeeze(0).float())
+        print("Initialized SteeringIntervention with steering text:", steering_text)
+        print("Steering embedding shape:", self.steering_embedding.shape)
+
+    def _get_space_embeds(self, batch_size, dtype):
+        """Robustly fetches a space token embedding and expands it for the batch."""
+        space_ids = self.tokenizer(" ", return_tensors="pt", add_special_tokens=False).input_ids.to(self.device)
+        # Fallback if tokenizer strips standalone spaces
+        if space_ids.numel() == 0:
+            space_ids = self.tokenizer("-", return_tensors="pt", add_special_tokens=False).input_ids.to(self.device)
+            
+        embedding_layer = self.base_model.get_input_embeddings()
+        space_embeds = embedding_layer(space_ids)
+        return space_embeds.expand(batch_size, -1, -1).to(dtype=dtype)
+
+    def forward(self, input_ids, attention_mask, **kwargs):
+        input_ids = input_ids.to(self.device)
+        attention_mask = attention_mask.to(self.device)
+        embedding_layer = self.base_model.get_input_embeddings()
+        prompt_embeds = embedding_layer(input_ids)
+        batch_size = input_ids.size(0)
+
+        steering_embedding_expanded = self.steering_embedding.unsqueeze(0).expand(batch_size, -1, -1)
+        space_embeds_expanded = self._get_space_embeds(batch_size, embedding_layer.weight.dtype)
+        space_len = space_embeds_expanded.size(1)
+
+        # Added spaces between source and steering
+        input_embeds = torch.cat([prompt_embeds, space_embeds_expanded, steering_embedding_expanded], dim=1)
         
-        # We use float() to ensure it's trainable even if the model is in half-precision
-        self.steering_embedding = nn.Parameter(instr_embeds.squeeze(0).float())
+        extended_attention_mask = torch.cat(
+            [
+                attention_mask,
+                torch.ones(batch_size, space_len, device=self.device),
+                torch.ones(batch_size, steering_embedding_expanded.size(1), device=self.device),
+            ],
+            dim=1,
+        )
 
-    def _get_space_embed(self, dtype):
-        """Helper to fetch a space embedding to bridge the source and steering."""
-        space_id = self.tokenizer(" ", return_tensors="pt", add_special_tokens=False).input_ids.to(self.device)
-        return self.base_model.get_input_embeddings()(space_id).squeeze(0).to(dtype=dtype)
+        outputs = self.base_model(inputs_embeds=input_embeds, attention_mask=extended_attention_mask)
+        return outputs.logits
 
-    def forward(self, batch):
-        """ Teacher-forced forward pass.
-        Forward pass that constructs the input sequence as:
-        [Source Tokens] [Steering Instruction] [Target Tokens]
-        and then slices the output to align with the target tokens for loss calculation.
-
-        Args:
-            batch (dict): A batch from the dataloader containing:
-                - input_ids: Source token IDs (B x S)
-                - attention_mask: Attention mask for source (B x S)
-                - labels: Target token IDs (B x T)
-                - target_attention_mask: Attention mask for target (B x T)
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: (logits, labels, mask)
-                - logits: Model output logits aligned with target tokens (B x T x Vocab)
-                - labels: Target token IDs (B x T)
-                - mask: Target attention mask (B x T)
-        """
+    def _teacher_forced_logits_and_labels(self, batch):
         input_ids = batch["input_ids"].to(self.device)
-        source_mask = batch["attention_mask"].to(self.device)
+        source_attention_mask = batch["attention_mask"].to(self.device)
+        target_attention_mask = batch["target_attention_mask"].to(self.device)
         labels = batch["labels"].to(self.device)
-        target_mask = batch["target_attention_mask"].to(self.device)
 
-        embed_layer = self.base_model.get_input_embeddings()
-        steer_embed = self.steering_embedding.to(dtype=embed_layer.weight.dtype)
-        
-        packed_embeds, packed_masks = [], []
-        actual_target_lengths = []
+        embedding_layer = self.base_model.get_input_embeddings()
 
-        # 1. Build sequences and track actual target lengths
-        for i in range(input_ids.size(0)):
-            s_len = int(source_mask[i].sum().item())
-            t_len = int(target_mask[i].sum().item())
-            actual_target_lengths.append(t_len)
+        steering_embedding = self.steering_embedding.to(dtype=embedding_layer.weight.dtype)
+        batch_size = input_ids.size(0)
+        steering_len = self.steering_embedding.size(0)
 
-            full_seq = torch.cat([
-                embed_layer(input_ids[i, :s_len]),
-                steer_embed,
-                embed_layer(labels[i, :t_len])
-            ], dim=0)
-            
-            packed_embeds.append(full_seq)
-            packed_masks.append(torch.ones(full_seq.size(0), device=self.device))
+        space_embeds_single = self._get_space_embeds(1, embedding_layer.weight.dtype).squeeze(0)
+        space_len = space_embeds_single.size(0)
+        packed_embeds = []
+        packed_masks = []
+        target_starts = []
+        target_lengths = []
 
-        # 2. Pass through base model
-        inputs_embeds = pad_sequence(packed_embeds, batch_first=True)
-        attn_mask = pad_sequence(packed_masks, batch_first=True)
-        outputs = self.base_model(inputs_embeds=inputs_embeds, attention_mask=attn_mask)
+        for i in range(batch_size):
+            source_len = int(source_attention_mask[i].sum().item())
+            target_len = int(target_attention_mask[i].sum().item())
 
-        # 3. Slice and Align Logits, Labels, and Masks
-        # We must trim everything to the max actual target length in this batch
-        max_t = max(actual_target_lengths)
-        
-        batch_logits = []
-        batch_labels = []
-        batch_masks = []
+            source_embeds = embedding_layer(input_ids[i, :source_len])
+            target_embeds = embedding_layer(labels[i, :target_len])
 
-        for i in range(input_ids.size(0)):
-            s_len = int(source_mask[i].sum().item())
-            t_len = actual_target_lengths[i]
-            
-            # Slice logits: starting at the end of prefix, taking exactly t_len tokens
-            start = s_len + steer_embed.size(0) - 1
-            logits_slice = outputs.logits[i, start : start + t_len]
-            
-            # Pad the slice to the batch's max_t so they can be stacked
-            padded_logits = torch.nn.functional.pad(
-                logits_slice, (0, 0, 0, max_t - t_len), value=0.0
+            sample_embeds = torch.cat(
+                [
+                    source_embeds,
+                    space_embeds_single,
+                    steering_embedding,
+                    # REMOVED the second space here, as the target now starts with a natural space token
+                    target_embeds,
+                ],
+                dim=0,
             )
-            batch_logits.append(padded_logits)
 
-            # Slice and pad labels/masks to match
-            batch_labels.append(torch.nn.functional.pad(labels[i, :t_len], (0, max_t - t_len), value=-100))
-            batch_masks.append(torch.nn.functional.pad(target_mask[i, :t_len], (0, max_t - t_len), value=0))
+            packed_embeds.append(sample_embeds)
+            packed_masks.append(torch.ones(sample_embeds.size(0), device=self.device, dtype=source_attention_mask.dtype))
+            
+            # Adjusted target start to account for the removed space
+            target_starts.append(source_len + space_len + steering_len - 1)
+            target_lengths.append(target_len)
 
-        return torch.stack(batch_logits), torch.stack(batch_labels), torch.stack(batch_masks)
+        input_embeds = pad_sequence(packed_embeds, batch_first=True)
+        attention_mask = pad_sequence(packed_masks, batch_first=True)
+
+        outputs = self.base_model(inputs_embeds=input_embeds, attention_mask=attention_mask)
+
+        max_target_len = max(target_lengths) if target_lengths else 0
+        vocab_size = outputs.logits.size(-1)
+        target_logits = outputs.logits.new_full((batch_size, max_target_len, vocab_size), 0.0)
+
+        for i, (target_start, target_len) in enumerate(zip(target_starts, target_lengths)):
+            target_logits[i, :target_len] = outputs.logits[i, target_start:target_start + target_len]
+
+        padded_labels = labels[:, :max_target_len]
+        padded_target_mask = target_attention_mask[:, :max_target_len]
+        return target_logits, padded_labels, padded_target_mask
 
     def training_step(self, batch):
-        """Calculates CrossEntropyLoss using the forward pass.
-        
-        Args:
-            batch (dict): A batch from the dataloader containing:
-                - input_ids: Source token IDs (B x S)
-                - attention_mask: Attention mask for source (B x S)
-                - labels: Target token IDs (B x T)
-                - target_attention_mask: Attention mask for target (B x T)
-        Returns:
-            torch.Tensor: The computed loss for the batch.
-        """
-        logits, labels, mask = self.forward(batch)
-        
-        # Flatten for loss calculation; ignore padding (-100)
-        flat_logits = logits.reshape(-1, logits.size(-1))
-        flat_labels = labels.clone()
-        flat_labels[mask == 0] = -100
-        
-        return nn.CrossEntropyLoss()(flat_logits, flat_labels.reshape(-1))
+        target_logits, labels, target_attention_mask = self._teacher_forced_logits_and_labels(batch)
+
+        loss_labels = labels.clone()
+        loss_labels[target_attention_mask == 0] = -100
+
+        loss = nn.CrossEntropyLoss()(target_logits.reshape(-1, target_logits.size(-1)), loss_labels.reshape(-1))
+
+        return loss
 
     def evaluation_step(self, batch):
-        """Runs forward pass for evaluation.
-        
-        Args:
-            batch (dict): A batch from the dataloader containing:
-                - input_ids: Source token IDs (B x S)
-                - attention_mask: Attention mask for source (B x S)
-                - labels: Target token IDs (B x T)
-                - target_attention_mask: Attention mask for target (B x T)
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: (logits, labels, mask)
-                - logits: Model output logits aligned with target tokens (B x T x Vocab)
-                - labels: Target token IDs (B x T)
-                - mask: Target attention mask (B x T)
-        """
-        return self.forward(batch)
+        return self._teacher_forced_logits_and_labels(batch)
 
     @torch.no_grad()
-    def generate(self, input_ids, attention_mask=None, max_new_tokens=20):
-        """Autoregressive text generation.
-
-        Args:
-            input_ids (torch.LongTensor): Batch of input token IDs (B x S).
-            attention_mask (torch.LongTensor, optional): Attention mask for input_ids (B x S). Defaults to None.
-            max_new_tokens (int, optional): Maximum number of tokens to generate. Defaults to 20.
-        
-        Returns:
-            torch.LongTensor: Generated token IDs (B x (S + generated)).
-        """
+    def generate(self, input_ids, attention_mask=None, max_new_tokens=10):
         self.base_model.eval()
-        embed_layer = self.base_model.get_input_embeddings()
-        steer_embed = self.steering_embedding.to(dtype=embed_layer.weight.dtype)
+        batch_size = input_ids.size(0)
+        device = self.device
         
-        results = []
-        for i in range(input_ids.size(0)):
-            s_len = int(attention_mask[i].sum().item()) if attention_mask is not None else input_ids.size(1)
-            
-            # Static prefix: [Source] [Steer]
-            prefix = torch.cat([embed_layer(input_ids[i, :s_len].to(self.device)), steer_embed], dim=0).unsqueeze(0)
-            
-            generated = torch.empty((1, 0), dtype=torch.long, device=self.device)
-            for _ in range(max_new_tokens):
-                curr_embeds = torch.cat([prefix, embed_layer(generated)], dim=1) if generated.size(1) > 0 else prefix
-                out = self.base_model(inputs_embeds=curr_embeds)
-                
-                next_token = torch.argmax(out.logits[:, -1, :], dim=-1).unsqueeze(-1)
-                if next_token.item() == self.tokenizer.eos_token_id:
-                    break
-                generated = torch.cat([generated, next_token], dim=1)
-            
-            results.append(torch.cat([input_ids[i, :s_len].to(self.device), generated.squeeze(0)], dim=0))
+        # Normalize EOS tokens
+        eos_ids = self.tokenizer.eos_token_id
+        if not isinstance(eos_ids, list):
+            eos_ids = [eos_ids]
+        eos_ids = [eid for eid in eos_ids if eid is not None]
+        
+        embedding_layer = self.base_model.get_input_embeddings()
+        generated_sequences = []
 
-        # Pad batch for return
-        max_l = max(len(r) for r in results)
-        output = input_ids.new_full((len(results), max_l), self.tokenizer.pad_token_id)
-        for i, r in enumerate(results):
-            output[i, :len(r)] = r
-        return output
+        for i in range(batch_size):
+            prompt_len = int(attention_mask[i].sum().item()) if attention_mask is not None else input_ids.size(1)
+            
+            # 1. Extract just the source prompt
+            source_input_ids = input_ids[i, :prompt_len].unsqueeze(0).to(device)
+            source_embeds = embedding_layer(source_input_ids)
+            
+            # 2. Build the static prefix embeddings
+            steering_embedding_expanded = self.steering_embedding.unsqueeze(0)
+            space_embeds_expanded = self._get_space_embeds(1, source_embeds.dtype)
+            
+            prefix_embeds = torch.cat([
+                source_embeds, 
+                space_embeds_expanded, 
+                steering_embedding_expanded
+                # REMOVED the second space here to match the updated training step
+            ], dim=1)
+            
+            # Trackers for generation
+            curr_input_ids = source_input_ids.clone()
+            generated_ids = torch.empty((1, 0), dtype=torch.long, device=device)
+
+            for _ in range(max_new_tokens):
+                # 3. Concatenate prefix with newly generated tokens
+                if generated_ids.size(1) > 0:
+                    generated_embeds = embedding_layer(generated_ids)
+                    input_embeds = torch.cat([prefix_embeds, generated_embeds], dim=1)
+                else:
+                    input_embeds = prefix_embeds
+
+                extended_mask = torch.ones(1, input_embeds.size(1), device=device, dtype=attention_mask.dtype if attention_mask is not None else torch.long)
+                
+                outputs = self.base_model(inputs_embeds=input_embeds, attention_mask=extended_mask)
+                next_token = torch.argmax(outputs.logits[:, -1, :], dim=-1).unsqueeze(-1)
+
+                # 4. Check for stopping condition
+                if next_token.item() in eos_ids:
+                    curr_input_ids = torch.cat([curr_input_ids, next_token], dim=1)
+                    break
+
+                # 5. Append generated token for the next loop iteration
+                curr_input_ids = torch.cat([curr_input_ids, next_token], dim=1)
+                generated_ids = torch.cat([generated_ids, next_token], dim=1)
+
+            generated_sequences.append(curr_input_ids.squeeze(0))
+
+        max_seq_len = max(seq.size(0) for seq in generated_sequences) if generated_sequences else 0
+        output_ids = input_ids.new_full((batch_size, max_seq_len), self.tokenizer.pad_token_id)
+        for i, seq in enumerate(generated_sequences):
+            output_ids[i, :seq.size(0)] = seq
+
+        return output_ids
