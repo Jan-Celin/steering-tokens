@@ -12,7 +12,7 @@ data:
   pin_memory: false
 
 training:
-  epochs: 20
+  epochs: 30
   learning_rate: 1e-4
   weight_decay: 1e-3
   temperature: 0
@@ -23,8 +23,8 @@ intervention:
   module: "interventions.steering"
   name: "steering"
   params:
-    steering_text: "continent"
+    steering_text: null
 
 metadata:
   project_name: "steering-tokens"
-  run_name: "location_continent_steering"
+  run_name: "location_continent"

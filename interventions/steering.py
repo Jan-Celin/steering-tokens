@@ -16,8 +16,12 @@ class SteeringIntervention(nn.Module):
         self.device = next(base_model.parameters()).device
 
         with torch.no_grad():
-            instruction_tokens = self.tokenizer(steering_text, return_tensors="pt", truncation=True, max_length=50)
-            instruction_embeds = base_model.get_input_embeddings()(instruction_tokens.input_ids.to(self.device))
+            if steering_text is None:
+                embedding_dim = base_model.get_input_embeddings().embedding_dim
+                instruction_embeds = torch.randn(1, 1, embedding_dim, device=self.device)
+            else:
+                instruction_tokens = self.tokenizer(steering_text, return_tensors="pt", truncation=True, max_length=50)
+                instruction_embeds = base_model.get_input_embeddings()(instruction_tokens.input_ids.to(self.device))
 
         self.steering_embedding = nn.Parameter(instruction_embeds.squeeze(0).float())
         print("Initialized SteeringIntervention with steering text:", steering_text)

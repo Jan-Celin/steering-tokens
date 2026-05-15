@@ -71,7 +71,9 @@ def main():
         **intervention_params
     )
 
-    output_dir = f"outputs/{intervention_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    metadata = config.get("metadata", {})
+
+    output_dir = f"outputs/{metadata.get('run_name', intervention_name)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     print("Loading dataset...")
     dataset_module_path = data_config.get("module")

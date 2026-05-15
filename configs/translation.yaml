@@ -23,8 +23,8 @@ intervention:
   module: "interventions.steering"
   name: "steering"
   params:
-    steering_text: "translate"
+    steering_text: null
 
 metadata:
   project_name: "steering-tokens"
-  run_name: "translation_steering"
+  run_name: "translation"
